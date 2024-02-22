@@ -96,20 +96,27 @@ class SlackEvent(BaseModel):
     authorizations: list
 
 
-def query_gpt_model(prompt, max_tokens=256, temperature=0.6):
+def query_gpt_model(prompt, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
     """Sends a prompt to the GPT model and returns its response."""
     client = OpenAI()
 
-    completion = client.chat.completions.create(
-        model=GPT_MODEL_ID,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    return completion.choices[0].message.content
+    for _ in range(max_retries):
+        completion = client.chat.completions.create(
+            model=GPT_MODEL_ID,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        content = completion.choices[0].message.content
+        if len(content.split(" ")) >= min_tokens:
+            break
+    else:
+        logging.error("Gave up after %d retries.", max_retries)
+
+    return content
 
 @app.post("/slack/event")
 def respond_to_event(event: SlackEvent | SlackChallenge):
