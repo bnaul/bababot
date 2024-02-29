@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "trumpbot-1470174245960")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 GPT_MODEL_ID = "ft:gpt-3.5-turbo-0613:replica::8fBMHKDg"
 SYSTEM_PROMPT = """You are John Flinchbaugh talking to his friends on Slack.
 
@@ -128,7 +129,7 @@ def respond_to_event(event: SlackEvent | SlackChallenge):
     user = event.event.get("user")
     response = f"<@{user}> {gpt_response}"
     requests.post(
-        "https://hooks.slack.com/services/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",
+        SLACK_WEBHOOK_URL,
         json={"text": response},
     )
     return response
