@@ -1,100 +1,59 @@
-"""Google Cloue Run function that receives a Slack webhook POST."""
+"""Discord webhook handler using FastAPI for serverless deployment."""
 
 import logging
 import os
+from typing import Optional
 
 import requests
+from fastapi import FastAPI, Request, Response, HTTPException
 from openai import OpenAI
-from fastapi import FastAPI, Request, status
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from nacl.signing import VerifyKey
+from nacl.exceptions import BadSignatureError
 
 PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "trumpbot-1470174245960")
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
-GPT_MODEL_ID = "ft:gpt-3.5-turbo-0613:replica::8fBMHKDg"
-SYSTEM_PROMPT = """You are John Flinchbaugh talking to his friends on Slack.
+DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+GPT_MODEL_ID = "ft:gpt-4.1-nano-2025-04-14:replica::CfGoUdMt"
+SYSTEM_PROMPT = """You are John Flinchbaugh talking to his friends on Discord.
 
-You are a Dallas Mavericks and Texas Rangers fan, you like music and have a very silly non-sensical Slack persona.
+You are a Dallas Mavericks and Texas Rangers fan, you like music and have a very silly non-sensical Discord persona.
 
 Whenever you are asked a question, you always answer with confidence, and never say "I dunno" or "Haha".
 """
 
+logging.basicConfig(level=logging.INFO)
+
 app = FastAPI()
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    exc_str = f'{exc}'.replace('\n', ' ').replace('   ', ' ')
-    logging.error(f"{request}: {exc_str}")
-    content = {'status_code': 10422, 'message': exc_str, 'data': None}
-    return JSONResponse(content=content, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+def verify_signature(signature: str, timestamp: str, body: bytes) -> bool:
+    """Verify Discord request signature."""
+    if not DISCORD_PUBLIC_KEY:
+        logging.warning("DISCORD_PUBLIC_KEY not set, skipping verification")
+        return True
+
+    try:
+        verify_key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
+        verify_key.verify(timestamp.encode() + body, bytes.fromhex(signature))
+        return True
+    except BadSignatureError:
+        return False
+    except Exception as e:
+        logging.error(f"Signature verification error: {e}")
+        return False
 
 
-class SlackChallenge(BaseModel):
-    challenge: str
-
-
-class SlackEvent(BaseModel):
-    """A Slack event.
-
-    Example:
-        {
-          "token": "zBgqfYxzWd1a9Hdsf5O1w6NN",
-          "team_id": "T0NSVARPH",
-          "api_app_id": "A06D6D4KNJW",
-          "event": {
-            "client_msg_id": "c2d0bcf0-49f6-4766-8dc3-86634d5fd569",
-            "type": "app_mention",
-            "text": "<@U06D8SU3UKE> speak!",
-            "user": "U0NTAV5S9",
-            "ts": "1704903988.355699",
-            "blocks": [
-              {
-                "type": "rich_text",
-                "block_id": "d8MID",
-                "elements": [
-                  {
-                    "type": "rich_text_section",
-                    "elements": [
-                      {
-                        "type": "user",
-                        "user_id": "U06D8SU3UKE"
-                      },
-                      {
-                        "type": "text",
-                        "text": " speak!"
-                      }
-                    ]
-                  }
-                ]
-              }
-            ],
-            "team": "T0NSVARPH",
-            "channel": "C05FX3D6B3M",
-            "event_ts": "1704903988.355699"
-          },
-          "type": "event_callback",
-          "event_id": "Ev06DCKYLSBE",
-          "event_time": 1704903988,
-          "authorizations": [
-            {
-              "enterprise_id": null,
-              "team_id": "T0NSVARPH",
-              "user_id": "U06D8SU3UKE",
-              "is_bot": true,
-              "is_enterprise_install": false
-            }
-          ]
-        }
-    """
+class DiscordInteraction(BaseModel):
+    """Discord interaction payload."""
+    type: int
+    data: Optional[dict] = None
+    guild_id: Optional[str] = None
+    channel_id: Optional[str] = None
+    member: Optional[dict] = None
+    user: Optional[dict] = None
     token: str
-    team_id: str
-    api_app_id: str
-    event: dict
-    type: str
-    event_id: str
-    event_time: int
-    authorizations: list
+    id: str
 
 
 def query_gpt_model(prompt, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
@@ -119,17 +78,56 @@ def query_gpt_model(prompt, min_tokens=4, max_tokens=256, temperature=0.7, max_r
 
     return content
 
-@app.post("/slack/event")
-def respond_to_event(event: SlackEvent | SlackChallenge):
-    """Respond to a Slack Events API webhook."""
-    if getattr(event, "challenge", None) is not None:
-        return event.challenge
-    print(event.dict())
-    gpt_response = query_gpt_model(event.event.get("text", "Hi Baba").removeprefix("<@U06D8SU3UKE> "))
-    user = event.event.get("user")
-    response = f"<@{user}> {gpt_response}"
-    requests.post(
-        SLACK_WEBHOOK_URL,
-        json={"text": response},
-    )
-    return response
+@app.post("/discord/interactions")
+async def handle_interaction(request: Request):
+    """Handle Discord interactions (slash commands)."""
+    # Get headers and body for signature verification
+    signature = request.headers.get("X-Signature-Ed25519")
+    timestamp = request.headers.get("X-Signature-Timestamp")
+    body = await request.body()
+
+    # Verify the request signature
+    if not verify_signature(signature, timestamp, body):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Parse the interaction
+    import json
+    interaction_data = json.loads(body)
+
+    # Type 1: PING - Discord verifies the endpoint
+    if interaction_data.get("type") == 1:
+        return {"type": 1}
+
+    # Type 2: Application Command
+    if interaction_data.get("type") == 2:
+        command_name = interaction_data.get("data", {}).get("name")
+
+        if command_name == "baba":
+            # Get the user's message
+            options = interaction_data.get("data", {}).get("options", [])
+            prompt = options[0].get("value", "Hi Baba") if options else "Hi Baba"
+
+            # Generate response
+            gpt_response = query_gpt_model(prompt)
+
+            # Return response to Discord
+            return {
+                "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
+                "data": {
+                    "content": gpt_response
+                }
+            }
+
+    return {"type": 1}
+
+
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {"status": "ok", "bot": "bababot"}
+
+
+@app.get("/health")
+async def health():
+    """Health check for Cloud Run."""
+    return {"status": "healthy"}
