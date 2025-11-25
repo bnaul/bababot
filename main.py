@@ -54,18 +54,25 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    """Respond to messages in Discord channels."""
+    """Respond to messages when mentioned."""
     if message.author == bot.user:
         return
 
     if message.author.bot:
         return
 
-    logging.info(f"Message from {message.author}: {message.content}")
+    # Only respond if the bot is mentioned
+    if bot.user not in message.mentions:
+        return
+
+    logging.info(f"Mentioned by {message.author}: {message.content}")
 
     try:
+        # Remove the mention from the message
+        content = message.content.replace(f'<@{bot.user.id}>', '').strip()
+
         async with message.channel.typing():
-            gpt_response = query_gpt_model(message.content)
+            gpt_response = query_gpt_model(content)
 
         await message.reply(gpt_response)
     except Exception as e:
