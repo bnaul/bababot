@@ -23,18 +23,22 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Store conversation history per channel (last 10 messages)
+conversation_history = {}
 
-def query_gpt_model(prompt, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
-    """Sends a prompt to the GPT model and returns its response."""
+
+def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
+    """Sends messages to the GPT model and returns its response.
+
+    Args:
+        messages: List of message dicts with 'role' and 'content' keys
+    """
     client = OpenAI()
 
     for _ in range(max_retries):
         completion = client.chat.completions.create(
             model=GPT_MODEL_ID,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ],
+            messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
         )
@@ -71,8 +75,30 @@ async def on_message(message):
         # Remove the mention from the message
         content = message.content.replace(f'<@{bot.user.id}>', '').strip()
 
+        # Get or create conversation history for this channel
+        channel_id = message.channel.id
+        if channel_id not in conversation_history:
+            conversation_history[channel_id] = []
+
+        # Build messages with conversation context
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        # Add last 10 messages from history
+        messages.extend(conversation_history[channel_id][-10:])
+
+        # Add current message
+        messages.append({"role": "user", "content": content})
+
         async with message.channel.typing():
-            gpt_response = query_gpt_model(content)
+            gpt_response = query_gpt_model(messages)
+
+        # Save to conversation history
+        conversation_history[channel_id].append({"role": "user", "content": content})
+        conversation_history[channel_id].append({"role": "assistant", "content": gpt_response})
+
+        # Keep only last 20 messages (10 exchanges) in history
+        if len(conversation_history[channel_id]) > 20:
+            conversation_history[channel_id] = conversation_history[channel_id][-20:]
 
         await message.reply(gpt_response)
     except Exception as e:
