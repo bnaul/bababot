@@ -1,11 +1,8 @@
 dask
 pandas
 openai>=1.0.0
-fastapi
-uvicorn[standard]
+discord.py>=2.0.0
 google-cloud-secret-manager
 numpy
 tqdm
 pyarrow
-requests
-PyNaCl
