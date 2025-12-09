@@ -1,5 +1,7 @@
 """Discord bot that responds to messages using a fine-tuned GPT model."""
 
+import argparse
+import asyncio
 import logging
 import os
 
@@ -106,7 +108,46 @@ async def on_message(message):
         await message.reply("Sorry, I had trouble responding to that!")
 
 
-if __name__ == "__main__":
+async def post_message(channel_id: int, message: str):
+    """Post a message to a Discord channel as the bot."""
     if not DISCORD_TOKEN:
         raise ValueError("DISCORD_TOKEN environment variable is not set")
-    bot.run(DISCORD_TOKEN)
+
+    client = discord.Client(intents=discord.Intents.default())
+
+    @client.event
+    async def on_ready():
+        try:
+            channel = client.get_channel(channel_id)
+            if channel is None:
+                channel = await client.fetch_channel(channel_id)
+            await channel.send(message)
+            logging.info(f"Posted message to channel {channel_id}")
+        finally:
+            await client.close()
+
+    await client.start(DISCORD_TOKEN)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Discord bot for Baba")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # Run bot command (default)
+    subparsers.add_parser("run", help="Run the Discord bot")
+
+    # Post message command
+    post_parser = subparsers.add_parser("post", help="Post a message as the bot")
+    post_parser.add_argument("channel_id", type=int, help="Discord channel ID")
+    post_parser.add_argument("message", type=str, help="Message to post")
+
+    args = parser.parse_args()
+
+    if not DISCORD_TOKEN:
+        raise ValueError("DISCORD_TOKEN environment variable is not set")
+
+    if args.command == "post":
+        asyncio.run(post_message(args.channel_id, args.message))
+    else:
+        # Default to running the bot
+        bot.run(DISCORD_TOKEN)
