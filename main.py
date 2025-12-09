@@ -1,12 +1,12 @@
 """Discord bot that responds to messages using a fine-tuned GPT model."""
 
-import argparse
-import asyncio
+import datetime
 import logging
 import os
+import zoneinfo
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from openai import OpenAI
 
 PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "trumpbot-1470174245960")
@@ -27,6 +27,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Store conversation history per channel (last 10 messages)
 conversation_history = {}
+
+# Channel for scheduled posts
+PUBIS_WEDNESDAY_CHANNEL_ID = 1418289476781998153
+
+# 6am Eastern time
+EASTERN = zoneinfo.ZoneInfo("America/New_York")
+WEDNESDAY_POST_TIME = datetime.time(hour=6, minute=0, tzinfo=EASTERN)
 
 
 def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
@@ -52,10 +59,25 @@ def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max
 
     return content
 
+@tasks.loop(time=WEDNESDAY_POST_TIME)
+async def pubis_wednesday():
+    """Post Happy Pubis Wednesday message every Wednesday at 6am Eastern."""
+    # Check if today is Wednesday (weekday 2)
+    now = datetime.datetime.now(EASTERN)
+    if now.weekday() == 2:
+        channel = bot.get_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
+        if channel is None:
+            channel = await bot.fetch_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
+        await channel.send("@here Happy Pubis Wednesday!")
+        logging.info("Posted Pubis Wednesday message")
+
+
 @bot.event
 async def on_ready():
     """Called when the bot is ready."""
     logging.info(f"{bot.user} has connected to Discord!")
+    if not pubis_wednesday.is_running():
+        pubis_wednesday.start()
 
 
 @bot.event
@@ -108,46 +130,7 @@ async def on_message(message):
         await message.reply("Sorry, I had trouble responding to that!")
 
 
-async def post_message(channel_id: int, message: str):
-    """Post a message to a Discord channel as the bot."""
-    if not DISCORD_TOKEN:
-        raise ValueError("DISCORD_TOKEN environment variable is not set")
-
-    client = discord.Client(intents=discord.Intents.default())
-
-    @client.event
-    async def on_ready():
-        try:
-            channel = client.get_channel(channel_id)
-            if channel is None:
-                channel = await client.fetch_channel(channel_id)
-            await channel.send(message)
-            logging.info(f"Posted message to channel {channel_id}")
-        finally:
-            await client.close()
-
-    await client.start(DISCORD_TOKEN)
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Discord bot for Baba")
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
-
-    # Run bot command (default)
-    subparsers.add_parser("run", help="Run the Discord bot")
-
-    # Post message command
-    post_parser = subparsers.add_parser("post", help="Post a message as the bot")
-    post_parser.add_argument("channel_id", type=int, help="Discord channel ID")
-    post_parser.add_argument("message", type=str, help="Message to post")
-
-    args = parser.parse_args()
-
     if not DISCORD_TOKEN:
         raise ValueError("DISCORD_TOKEN environment variable is not set")
-
-    if args.command == "post":
-        asyncio.run(post_message(args.channel_id, args.message))
-    else:
-        # Default to running the bot
-        bot.run(DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN)
