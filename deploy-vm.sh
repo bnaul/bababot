@@ -31,8 +31,10 @@ else
     git checkout -f origin/main
 fi
 
-# Install dependencies
-pip3 install -r requirements.txt
+# Install dependencies in a virtual environment
+python3 -m venv /opt/venv
+source /opt/venv/bin/activate
+pip install -r requirements.txt
 
 # Get environment variables from metadata
 DISCORD_TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/discord-token" -H "Metadata-Flavor: Google")
@@ -42,9 +44,10 @@ export DISCORD_TOKEN
 export OPENAI_API_KEY
 
 # Run the bot with auto-restart
+source /opt/venv/bin/activate
 while true; do
     echo "Starting bababot..."
-    python3 main.py || echo "Bot crashed, restarting in 5 seconds..."
+    python main.py || echo "Bot crashed, restarting in 5 seconds..."
     sleep 5
 done
 STARTUPEOF
@@ -54,7 +57,7 @@ gcloud compute instances create ${INSTANCE_NAME} \
     --project=${PROJECT_ID} \
     --zone=${ZONE} \
     --machine-type=e2-micro \
-    --network-interface=network-tier=STANDARD,stack-type=IPV4_ONLY,subnet=default \
+    --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY \
     --metadata-from-file=startup-script=/tmp/startup-script.sh \
     --metadata=discord-token="${DISCORD_TOKEN}",openai-key="${OPENAI_API_KEY}" \
     --maintenance-policy=MIGRATE \
