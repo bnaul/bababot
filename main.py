@@ -91,6 +91,10 @@ async def on_message(message):
 
     # Only respond if the bot is mentioned
     if bot.user not in message.mentions:
+        # On Wednesdays, respond to all messages in the Pubis Wednesday channel
+        now = datetime.datetime.now(EASTERN)
+        if now.weekday() == 2 and message.channel.id == PUBIS_WEDNESDAY_CHANNEL_ID:
+            await message.reply("Don't forget Pubis Wednesday!")
         return
 
     logging.info(f"Mentioned by {message.author}: {message.content}")
