@@ -33,6 +33,7 @@ PUBIS_WEDNESDAY_CHANNEL_ID = 1418289476781998153
 
 # 6am Eastern time
 EASTERN = zoneinfo.ZoneInfo("America/New_York")
+TUESDAY_POST_TIME = datetime.time(hour=6, minute=0, tzinfo=EASTERN)
 WEDNESDAY_POST_TIME = datetime.time(hour=6, minute=0, tzinfo=EASTERN)
 
 
@@ -59,6 +60,19 @@ def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max
 
     return content
 
+@tasks.loop(time=TUESDAY_POST_TIME)
+async def tumor_tuesday():
+    """Post Happy Tumor Tuesday message every Tuesday at 6am Eastern."""
+    # Check if today is Tuesday (weekday 1)
+    now = datetime.datetime.now(EASTERN)
+    if now.weekday() == 1:
+        channel = bot.get_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
+        if channel is None:
+            channel = await bot.fetch_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
+        await channel.send("@here Happy Tumor Tuesday!")
+        logging.info("Posted Tumor Tuesday message")
+
+
 @tasks.loop(time=WEDNESDAY_POST_TIME)
 async def pubis_wednesday():
     """Post Happy Pubis Wednesday message every Wednesday at 6am Eastern."""
@@ -76,6 +90,8 @@ async def pubis_wednesday():
 async def on_ready():
     """Called when the bot is ready."""
     logging.info(f"{bot.user} has connected to Discord!")
+    if not tumor_tuesday.is_running():
+        tumor_tuesday.start()
     if not pubis_wednesday.is_running():
         pubis_wednesday.start()
 
