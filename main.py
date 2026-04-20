@@ -3,7 +3,9 @@
 import datetime
 import logging
 import os
+import re
 import zoneinfo
+from collections import defaultdict
 
 import discord
 from discord.ext import commands, tasks
@@ -35,6 +37,84 @@ PUBIS_WEDNESDAY_CHANNEL_ID = 1418289476781998153
 EASTERN = zoneinfo.ZoneInfo("America/New_York")
 TUESDAY_POST_TIME = datetime.time(hour=6, minute=0, tzinfo=EASTERN)
 WEDNESDAY_POST_TIME = datetime.time(hour=6, minute=0, tzinfo=EASTERN)
+MONDAY_POST_TIME = datetime.time(hour=6, minute=0, tzinfo=EASTERN)
+
+WORDLE_BOT_ID = 1211781489931452447
+WORDLE_USER_ID_TO_NAME = {
+    "1293357226949345354": "jflinchb4",
+    "1418330168560320564": "brittbruttbrottboof",
+    "805134315616862208": "bnaul",
+    "794037600003817502": "djontology",
+    "160295234746580993": "darthnowitzki41",
+    "789364254855135252": "ragonk_nd",
+}
+WORDLE_NAME_ALIASES = {
+    "brutt": "bnaul",
+    "Fontanananana": "jflinchb4",
+    "Brott": "darthnowitzki41",
+}
+
+
+def _resolve_wordle_name(token):
+    mention = re.match(r"<@(\d+)>", token)
+    if mention:
+        name = WORDLE_USER_ID_TO_NAME.get(mention.group(1), f"<@{mention.group(1)}>")
+    else:
+        name = token.lstrip("@")
+    return WORDLE_NAME_ALIASES.get(name, name)
+
+
+def _parse_wordle_score(score_str):
+    return 7 if score_str.upper().startswith("X") else int(score_str.split("/")[0])
+
+
+def _format_weekly_wordle_stats(messages, since: datetime.date):
+    records = []
+    for msg in messages:
+        if msg.author.id != WORDLE_BOT_ID:
+            continue
+        if "yesterday" not in msg.content.lower():
+            continue
+        post_date = msg.created_at.astimezone(EASTERN).date()
+        game_date = post_date - datetime.timedelta(days=1)
+        if game_date < since:
+            continue
+        for line in msg.content.split("\n"):
+            m = re.match(r"[👑\s]*([X\d]/6):\s*(.+)", line)
+            if not m:
+                continue
+            score = _parse_wordle_score(m.group(1))
+            for player in re.split(r"\s+", m.group(2).strip()):
+                name = _resolve_wordle_name(player)
+                if name:
+                    records.append({"date": str(game_date), "player": name, "score": score})
+
+    if not records:
+        return None
+
+    stats = defaultdict(lambda: {"games": 0, "total": 0, "fails": 0, "wins": 0})
+    for r in records:
+        p = r["player"]
+        stats[p]["games"] += 1
+        stats[p]["total"] += r["score"]
+        if r["score"] == 7:
+            stats[p]["fails"] += 1
+        else:
+            stats[p]["wins"] += 1
+
+    ranked = sorted(stats.items(), key=lambda x: x[1]["total"] / x[1]["games"])
+    num_days = len(set(r["date"] for r in records))
+
+    lines = [f"**Weekly Wordle Leaderboard** ({since.strftime('%b %d')} – {(since + datetime.timedelta(days=6)).strftime('%b %d')}, {num_days} day{'s' if num_days != 1 else ''})"]
+    lines.append("```")
+    lines.append(f"{'Player':<25} {'Games':>5} {'Avg':>5} {'Fails':>5} {'Win%':>6}")
+    lines.append("-" * 50)
+    for name, s in ranked:
+        avg = s["total"] / s["games"]
+        win_pct = 100 * s["wins"] / s["games"]
+        lines.append(f"{name:<25} {s['games']:>5} {avg:>5.2f} {s['fails']:>5} {win_pct:>5.1f}%")
+    lines.append("```")
+    return "\n".join(lines)
 
 
 def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
@@ -86,6 +166,37 @@ async def pubis_wednesday():
         logging.info("Posted Pubis Wednesday message")
 
 
+@tasks.loop(time=MONDAY_POST_TIME)
+async def wordle_monday():
+    """Post weekly Wordle leaderboard every Monday at 6am Eastern."""
+    now = datetime.datetime.now(EASTERN)
+    if now.weekday() != 0:
+        return
+    channel = bot.get_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
+
+    # Collect last 7 days of messages (Mon–Sun)
+    since = (now - datetime.timedelta(days=7)).date()
+    after_dt = datetime.datetime.combine(since, datetime.time.min, tzinfo=EASTERN)
+    messages = [msg async for msg in channel.history(limit=500, after=after_dt, oldest_first=True)]
+
+    summary = _format_weekly_wordle_stats(messages, since)
+    if summary:
+        await channel.send(f"@here {summary}")
+        logging.info("Posted weekly Wordle leaderboard")
+
+        gpt_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Here are the Wordle results for the past week:\n\n{summary}\n\nWhat do you think?"},
+        ]
+        async with channel.typing():
+            gpt_response = query_gpt_model(gpt_messages, max_tokens=512)
+        await channel.send(gpt_response)
+    else:
+        logging.info("No Wordle data found for the past week")
+
+
 @bot.event
 async def on_ready():
     """Called when the bot is ready."""
@@ -94,6 +205,9 @@ async def on_ready():
         tumor_tuesday.start()
     if not pubis_wednesday.is_running():
         pubis_wednesday.start()
+    if not wordle_monday.is_running():
+        wordle_monday.start()
+
 
 
 @bot.event
