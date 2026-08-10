@@ -1,5 +1,6 @@
 """Discord bot that responds to messages using a fine-tuned GPT model."""
 
+import asyncio
 import datetime
 import logging
 import os
@@ -117,6 +118,38 @@ def _format_weekly_wordle_stats(messages, since: datetime.date):
     return "\n".join(lines)
 
 
+def _is_todays_wordle_recap(message, today: datetime.date):
+    return (
+        message.channel.id == PUBIS_WEDNESDAY_CHANNEL_ID
+        and message.author.id == WORDLE_BOT_ID
+        and "yesterday" in message.content.lower()
+        and message.created_at.astimezone(EASTERN).date() == today
+    )
+
+
+async def _wait_for_todays_wordle_recap(channel, today: datetime.date):
+    """Wait until the Wordle bot has posted today's recap in the channel."""
+    check = lambda message: _is_todays_wordle_recap(message, today)
+
+    # Start listening before checking history so a recap arriving during the
+    # history request cannot slip through the gap.
+    waiter = asyncio.create_task(bot.wait_for("message", check=check))
+    try:
+        start_of_day = datetime.datetime.combine(today, datetime.time.min, tzinfo=EASTERN)
+        async for message in channel.history(limit=100, after=start_of_day):
+            if check(message):
+                logging.info("Today's Wordle recap is already available")
+                return message
+
+        logging.info("Waiting for today's Wordle recap before posting the weekly leaderboard")
+        message = await waiter
+        logging.info("Today's Wordle recap arrived")
+        return message
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+
 def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max_retries=5):
     """Sends messages to the GPT model and returns its response.
 
@@ -168,7 +201,7 @@ async def pubis_wednesday():
 
 @tasks.loop(time=MONDAY_POST_TIME)
 async def wordle_monday():
-    """Post weekly Wordle leaderboard every Monday at 6am Eastern."""
+    """Post the weekly Wordle leaderboard after Monday's recap arrives."""
     now = datetime.datetime.now(EASTERN)
     if now.weekday() != 0:
         return
@@ -176,7 +209,10 @@ async def wordle_monday():
     if channel is None:
         channel = await bot.fetch_channel(PUBIS_WEDNESDAY_CHANNEL_ID)
 
-    # Collect last 7 days of messages (Mon–Sun)
+    await _wait_for_todays_wordle_recap(channel, now.date())
+
+    # Collect last 7 days of messages (Mon–Sun), including Sunday's results
+    # from the recap that was just posted today.
     since = (now - datetime.timedelta(days=7)).date()
     after_dt = datetime.datetime.combine(since, datetime.time.min, tzinfo=EASTERN)
     messages = [msg async for msg in channel.history(limit=500, after=after_dt, oldest_first=True)]
