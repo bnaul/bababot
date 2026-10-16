@@ -40,12 +40,13 @@ def main_():
     parser.add_argument("--limit", type=int, default=40)
     parser.add_argument("--backends", nargs=2, default=["finetune", "prompt"])
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    parser.add_argument("--prompts", type=Path, default=HOLDOUT_FILE)
     args = parser.parse_args()
 
     main.PROMPT_SYSTEM_MESSAGE = main.build_prompt_system_message()
     main.TANGENT_POOL = main.load_tangent_pool()
     random.seed(1)
-    rows = [json.loads(line) for line in open(HOLDOUT_FILE)][: args.limit]
+    rows = [json.loads(line) for line in open(args.prompts)][: args.limit]
 
     # One backend at a time, since query_gpt_model reads the module-level BOT_BACKEND
     results = {}
@@ -61,7 +62,7 @@ def main_():
         key.append(f"{i + 1}: A={pair[0][0]}, B={pair[1][0]}")
         quoted = "\n".join(f"> {line}" for line in row["prompt"].splitlines())
         lines += [f"## {i + 1}", quoted, "", f"**A:** {pair[0][1]}", "", f"**B:** {pair[1][1]}", "",
-                  f"<details><summary>What John actually said</summary>\n\n{row['actual']}\n</details>", ""]
+                  f"<details><summary>Actual reply</summary>\n\n{row['actual']}\n</details>", ""]
 
     lines += ["---", "## Answer key", "", *key]
     args.output.write_text("\n".join(lines))
