@@ -4,9 +4,11 @@ import asyncio
 import datetime
 import logging
 import os
+import random
 import re
 import zoneinfo
 from collections import defaultdict
+from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
@@ -21,6 +23,51 @@ You are a Dallas Mavericks and Texas Rangers fan, you like music and have a very
 
 Whenever you are asked a question, you always answer with confidence, and never say "I dunno" or "Haha".
 """
+
+# "finetune" uses GPT_MODEL_ID; "prompt" uses PROMPT_MODEL_ID with few-shot examples
+# built by scripts/build_persona_prompt.py; "local" uses the self-hosted LoRA fine-tune
+# (Qwen3.5-4B) served by llama-server's OpenAI-compatible API
+BOT_BACKEND = os.getenv("BOT_BACKEND", "finetune")
+LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8088/v1")
+PROMPT_MODEL_ID = os.getenv("PROMPT_MODEL_ID", "gpt-6-luna")
+PERSONA_EXAMPLES_PATH = Path(os.getenv("PERSONA_EXAMPLES_PATH", Path(__file__).parent / "data" / "persona_examples.txt"))
+PROMPT_STYLE_GUIDE = """
+You are not an assistant. Never offer help, never explain yourself, never break character, and never mention being an AI.
+
+The whole point of this bot is to be dumb, absurd, and nonsensical. Do NOT be clever or witty:
+- No jokes, puns, wordplay, punchlines, or witty observations about what your friend said.
+- Never repeat or riff on your friend's words back to them.
+- Often only half-follow the conversation, misunderstand it, or ignore it entirely and bring up \
+something unrelated that came out of nowhere. Vary the tangents a lot; never fall into a pattern \
+like tacking on a sports score.
+- It's fine to be confidently wrong, mundane, rambling, or to contradict yourself.
+- Sloppy is good: typos, odd capitalization, no closing punctuation, several short lines.
+
+Match the voice of the real messages below. Most are short, but sometimes John goes on a long tangent.
+
+Here are real messages John sent, each with the message from a friend he was replying to:
+"""
+# Chance of planting a random past John message as a "thought" to pull the reply off topic,
+# mimicking the fine-tuned model's tangents
+TANGENT_PROBABILITY = float(os.getenv("TANGENT_PROBABILITY", "0.5"))
+
+
+def build_prompt_system_message():
+    """System prompt for the prompt-based backend. Kept byte-identical across calls so it is cached."""
+    return SYSTEM_PROMPT + PROMPT_STYLE_GUIDE + "\n" + PERSONA_EXAMPLES_PATH.read_text()
+
+
+def load_tangent_pool():
+    """John's replies from the example file, used to seed random tangents."""
+    return re.findall(r"^john: (.*?)\n</example>", PERSONA_EXAMPLES_PATH.read_text(), re.M | re.S)
+
+
+def tangent_message():
+    """Added after the conversation (so the cached prefix is unchanged) to push replies off topic."""
+    if random.random() >= TANGENT_PROBABILITY:
+        return []
+    thought = random.choice(TANGENT_POOL)
+    return [{"role": "system", "content": f"Something random on your mind right now (riff on it, or on something else, instead of the conversation):\n{thought}"}]
 
 logging.basicConfig(level=logging.INFO)
 
@@ -156,15 +203,31 @@ def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max
     Args:
         messages: List of message dicts with 'role' and 'content' keys
     """
-    client = OpenAI()
+    client = OpenAI(base_url=LOCAL_LLM_URL, api_key="unused") if BOT_BACKEND == "local" else OpenAI()
+
+    if BOT_BACKEND == "local":
+        # The small model loops ("no\nno\nno...") without repetition penalties; DRY + a
+        # slightly higher temperature keeps it rambling without getting stuck
+        request = dict(
+            model="bababot",
+            max_tokens=max_tokens,
+            temperature=0.9,
+            extra_body={"dry_multiplier": 0.8, "repeat_penalty": 1.1},
+        )
+    elif BOT_BACKEND == "prompt":
+        # Swap in the few-shot system prompt; Luna-style reasoning models don't accept
+        # temperature or max_tokens
+        messages = (
+            [{"role": "system", "content": PROMPT_SYSTEM_MESSAGE}]
+            + [m for m in messages if m["role"] != "system"]
+            + tangent_message()
+        )
+        request = dict(model=PROMPT_MODEL_ID, max_completion_tokens=max_tokens, reasoning_effort="none")
+    else:
+        request = dict(model=GPT_MODEL_ID, max_tokens=max_tokens, temperature=temperature)
 
     for _ in range(max_retries):
-        completion = client.chat.completions.create(
-            model=GPT_MODEL_ID,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        completion = client.chat.completions.create(messages=messages, **request)
         content = completion.choices[0].message.content
         if len(content.split(" ")) >= min_tokens:
             break
@@ -172,6 +235,10 @@ def query_gpt_model(messages, min_tokens=4, max_tokens=256, temperature=0.7, max
         logging.error("Gave up after %d retries.", max_retries)
 
     return content
+
+
+PROMPT_SYSTEM_MESSAGE = build_prompt_system_message() if BOT_BACKEND == "prompt" else None
+TANGENT_POOL = load_tangent_pool() if BOT_BACKEND == "prompt" else None
 
 @tasks.loop(time=TUESDAY_POST_TIME)
 async def tumor_tuesday():

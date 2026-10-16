@@ -161,3 +161,6 @@ cython_debug/
 
 tags
 .credentials.json
+
+# Private chat history (repo is public)
+data/

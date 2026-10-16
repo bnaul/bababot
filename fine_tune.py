@@ -4,8 +4,10 @@ import sys
 import time
 from openai import OpenAI
 
-TRAINING_FILE = "all_messages.jsonl"
-MODEL = "gpt-4.1-nano-2025-04-14"
+TRAINING_FILE = sys.argv[1] if len(sys.argv) > 1 else "all_messages.jsonl"
+# gpt-4.1-nano shuts down 2026-10-23; new fine-tuning jobs end 2027-01-06
+MODEL = "gpt-4.1-mini-2025-04-14"
+N_EPOCHS = 1
 
 
 def main():
@@ -29,7 +31,8 @@ def main():
     print(f"\nCreating fine-tuning job for model: {MODEL}...")
     job = client.fine_tuning.jobs.create(
         training_file=message_file.id,
-        model=MODEL
+        model=MODEL,
+        method={"type": "supervised", "supervised": {"hyperparameters": {"n_epochs": N_EPOCHS}}},
     )
 
     print(f"✓ Fine-tuning job created: {job.id}")
