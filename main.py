@@ -322,8 +322,11 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Only respond if the bot is mentioned
-    if bot.user not in message.mentions:
+    # Only respond if the bot is mentioned. Discord autocomplete often picks the bot's
+    # managed role (same name, "@Bababot") instead of the user, so accept either.
+    bot_role = message.guild.self_role if message.guild else None
+    role_mentioned = bot_role is not None and bot_role in message.role_mentions
+    if bot.user not in message.mentions and not role_mentioned:
         # On Wednesdays, respond to all messages in the Pubis Wednesday channel
         now = datetime.datetime.now(EASTERN)
         if now.weekday() == 2 and message.channel.id == PUBIS_WEDNESDAY_CHANNEL_ID:
@@ -334,7 +337,9 @@ async def on_message(message):
 
     try:
         # Remove the mention from the message
-        content = message.content.replace(f'<@{bot.user.id}>', '').strip()
+        mention_ids = [str(bot.user.id)] + ([f"&{bot_role.id}"] if bot_role else [])
+        mention_pattern = r"<@!?(?:" + "|".join(re.escape(i) for i in mention_ids) + r")>"
+        content = re.sub(mention_pattern, "", message.content).strip()
 
         # Get or create conversation history for this channel
         channel_id = message.channel.id
